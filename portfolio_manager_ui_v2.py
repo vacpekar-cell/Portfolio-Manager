@@ -1581,8 +1581,23 @@ class PortfolioManagerApp:
         ttk.Button(add_frame, text="Odebrat", command=self._remove_holding).pack(side=tk.LEFT, padx=2)
 
         # Treeview
-        self.port_tree = ttk.Treeview(left, columns=("ticker", "name", "sector", "price", "mcap", "czk"), show="headings", height=8)
-        p_headings = {"ticker": "Ticker", "name": "Název", "sector": "Sektor", "price": "Cena USD", "mcap": "Market Cap", "czk": "Hodnota CZK"}
+        self.port_tree = ttk.Treeview(
+            left,
+            columns=("ticker", "name", "sector", "price", "mcap", "czk", "pred", "q10", "q90"),
+            show="headings",
+            height=8,
+        )
+        p_headings = {
+            "ticker": "Ticker",
+            "name": "Název",
+            "sector": "Sektor",
+            "price": "Cena USD",
+            "mcap": "Market Cap",
+            "czk": "Hodnota CZK",
+            "pred": "Predikce %",
+            "q10": "Q10 %",
+            "q90": "Q90 %",
+        }
         for col, lab in p_headings.items():
             self.port_tree.heading(col, text=lab)
             self.port_tree.column(col, width=60 if col != "name" else 120, anchor=tk.CENTER)
@@ -1759,6 +1774,7 @@ class PortfolioManagerApp:
         self.is_loading_meta = False
         self._set_busy(False, f"Načteno {len(self.records)} akcií z {self.meta_path.name}.")
         self._append_log(f"Načteno {len(self.records)} akcií z {self.meta_path.name}.")
+        self._refresh_portfolio_tree()
 
     def _handle_meta_error(self, message: str):
         self.is_loading_meta = False
@@ -2029,11 +2045,20 @@ class PortfolioManagerApp:
     def _refresh_portfolio_tree(self):
         for item in self.port_tree.get_children():
             self.port_tree.delete(item)
+        records_by_ticker = {record.ticker.upper(): record for record in self.records}
         
         def update_rows(metadata):
             for t, amt in self.portfolio_dict.items():
                 meta = metadata.get(t, {"name": t, "sector": "N/A", "price": 0.0, "mcap": "0"})
-                self.port_tree.insert("", tk.END, values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}"))
+                record = records_by_ticker.get(t.upper())
+                pred = f"{record.forecast_pct * 100:.2f}" if record else "-"
+                q10 = f"{record.std_pct * 100:.2f}" if record else "-"
+                q90 = f"{record.upside_pct * 100:.2f}" if record else "-"
+                self.port_tree.insert(
+                    "",
+                    tk.END,
+                    values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}", pred, q10, q90),
+                )
                 
         self.fetcher.fetch_async(list(self.portfolio_dict.keys()), lambda m: self.root.after(0, update_rows, m))
 
