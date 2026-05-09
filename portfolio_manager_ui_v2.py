@@ -1585,7 +1585,7 @@ class PortfolioManagerApp:
         # Treeview
         self.port_tree = ttk.Treeview(
             left,
-            columns=("ticker", "name", "sector", "price", "mcap", "czk", "pred", "q10", "q90", "avg_below_q10", "avg_above_q90"),
+            columns=("ticker", "name", "sector", "price", "mcap", "czk", "pred", "q10", "q90", "source"),
             show="headings",
             height=8,
         )
@@ -1599,8 +1599,7 @@ class PortfolioManagerApp:
             "pred": "Predikce %",
             "q10": "Q10 %",
             "q90": "Q90 %",
-            "avg_below_q10": "Průměr <Q10 %",
-            "avg_above_q90": "Průměr >Q90 %",
+            "source": "Zdroj",
         }
         for col, lab in p_headings.items():
             self.port_tree.heading(col, text=lab)
@@ -1886,7 +1885,7 @@ class PortfolioManagerApp:
                 f"Tyto tickery z vašeho portfolia nemáme k dispozici v současných datech "
                 f"(možná překlep, nebo starší akcie, kterou už AI nesleduje):\n\n"
                 f"{', '.join(missing)}\n\n"
-                f"Při optimalizaci z nich budou algoritmem vyjmuty. Pokračovat?"
+                    f"Při optimalizaci pro ně použijeme fallback z historických dat (bez nákupu nových pozic)."
             )
             # You can simply show a warning, or ask for confirmation. Let's just show info for now:
             messagebox.showwarning("Neznámé tickery", msg)
@@ -2087,15 +2086,24 @@ class PortfolioManagerApp:
                 meta = metadata.get(t, {"name": t, "sector": "N/A", "price": 0.0, "mcap": "0"})
                 record = records_by_ticker.get(t.upper())
                 fallback = self.fallback_prediction_cache.get(t.upper())
-                pred = f"{record.forecast_pct * 100:.2f}" if record else (f"{fallback['pred'] * 100:.2f}" if fallback else "-")
-                q10 = f"{record.std_pct * 100:.2f}" if record else (f"{fallback['q10'] * 100:.2f}" if fallback else "-")
-                q90 = f"{record.upside_pct * 100:.2f}" if record else (f"{fallback['q90'] * 100:.2f}" if fallback else "-")
-                avg_below_q10 = f"{fallback['avg_below_q10'] * 100:.2f}" if fallback else "-"
-                avg_above_q90 = f"{fallback['avg_above_q90'] * 100:.2f}" if fallback else "-"
+                if record:
+                    h52 = (record.horizon_data or {}).get("52w")
+                    pred_val = h52[0] if h52 else record.forecast_pct
+                    q10_val = h52[1] if h52 else record.std_pct
+                    q90_val = h52[2] if h52 else record.upside_pct
+                    source = "AI (starší)" if record.is_synthetic else "AI"
+                    pred = f"{pred_val * 100:.2f}"
+                    q10 = f"{q10_val * 100:.2f}"
+                    q90 = f"{q90_val * 100:.2f}"
+                else:
+                    pred = f"{fallback['52w_pred'] * 100:.2f}" if fallback else "-"
+                    q10 = f"{fallback['52w_q10'] * 100:.2f}" if fallback else "-"
+                    q90 = f"{fallback['52w_q90'] * 100:.2f}" if fallback else "-"
+                    source = "Fallback historie" if fallback else "-"
                 self.port_tree.insert(
                     "",
                     tk.END,
-                    values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}", pred, q10, q90, avg_below_q10, avg_above_q90),
+                    values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}", pred, q10, q90, source),
                 )
                 
         self.fetcher.fetch_async(list(self.portfolio_dict.keys()), lambda m: self.root.after(0, update_rows, m))
@@ -2113,7 +2121,6 @@ class PortfolioManagerApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _compute_weekly_fallback_predictions(self, tickers: list[str], uncertainty_scale: float = 1.5) -> dict[str, dict[str, float]]:
-        np = _load_numpy()
         pd = _load_pandas()
         yf = _load_yfinance()
         if not yf:
@@ -2125,23 +2132,52 @@ class PortfolioManagerApp:
         if isinstance(prices, pd.Series):
             prices = prices.to_frame(name=tickers[0])
 
+        horizons = {"1w": 1, "4w": 4, "13w": 13, "26w": 26, "52w": 52}
+        alpha_weights = {
+            "1w": float(self.alpha_1w_var.get()),
+            "4w": float(self.alpha_4w_var.get()),
+            "13w": float(self.alpha_13w_var.get()),
+            "26w": float(self.alpha_26w_var.get()),
+            "52w": float(self.alpha_52w_var.get()),
+        }
+        total_alpha = max(sum(alpha_weights.values()), 1e-9)
+        norm_alpha = {k: v / total_alpha for k, v in alpha_weights.items()}
         result: dict[str, dict[str, float]] = {}
         for ticker in tickers:
             if ticker not in prices.columns:
                 continue
-            weekly_returns = prices[ticker].dropna().pct_change().dropna()
+            weekly_returns = prices[ticker].dropna().pct_change().dropna().astype(float)
             if len(weekly_returns) < 20:
                 continue
-            raw_q10 = float(weekly_returns.quantile(0.10))
-            raw_q90 = float(weekly_returns.quantile(0.90))
-            below = weekly_returns[weekly_returns <= raw_q10]
-            above = weekly_returns[weekly_returns >= raw_q90]
+            horizon_data: dict[str, tuple[float, float, float]] = {}
+            agg_pred = 0.0
+            agg_q10 = 0.0
+            agg_q90 = 0.0
+            for hk, window in horizons.items():
+                rolled = weekly_returns.rolling(window=window).sum().dropna() if window > 1 else weekly_returns
+                if len(rolled) < 12:
+                    continue
+                raw_q10 = float(rolled.quantile(0.10))
+                raw_q90 = float(rolled.quantile(0.90))
+                scaled_q10 = raw_q10 * uncertainty_scale
+                scaled_q90 = raw_q90 * uncertainty_scale
+                mean_pred = float(rolled.mean())
+                horizon_data[hk] = (mean_pred, scaled_q10, scaled_q90)
+                w = norm_alpha.get(hk, 0.0)
+                agg_pred += mean_pred * w
+                agg_q10 += scaled_q10 * w
+                agg_q90 += scaled_q90 * w
+            if not horizon_data:
+                continue
+            h52 = horizon_data.get("52w", horizon_data[max(horizon_data, key=lambda k: horizons[k])])
             result[ticker] = {
-                "pred": float(weekly_returns.mean()),
-                "q10": raw_q10 * uncertainty_scale,
-                "q90": raw_q90 * uncertainty_scale,
-                "avg_below_q10": float(np.nan_to_num(below.mean(), nan=0.0)) * uncertainty_scale,
-                "avg_above_q90": float(np.nan_to_num(above.mean(), nan=0.0)) * uncertainty_scale,
+                "pred": agg_pred,
+                "q10": agg_q10,
+                "q90": agg_q90,
+                "52w_pred": h52[0],
+                "52w_q10": h52[1],
+                "52w_q90": h52[2],
+                "horizon_data": horizon_data,
             }
         return result
 
@@ -2156,6 +2192,7 @@ class PortfolioManagerApp:
             if not data:
                 continue
             downside = max(1e-6, abs(data["q10"]))
+            horizon_data = data.get("horizon_data", {})
             records.append(
                 StockRecord(
                     ticker=ticker,
@@ -2164,13 +2201,7 @@ class PortfolioManagerApp:
                     std_pct=downside,
                     upside_pct=max(0.0, float(data["q90"])),
                     is_synthetic=True,
-                    horizon_data={
-                        "1w": (
-                            float(data["pred"]),
-                            float(data["avg_below_q10"]),
-                            float(data["avg_above_q90"]),
-                        )
-                    },
+                    horizon_data=horizon_data if isinstance(horizon_data, dict) else None,
                 )
             )
         return records
