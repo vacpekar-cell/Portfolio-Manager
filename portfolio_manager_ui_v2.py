@@ -1531,6 +1531,8 @@ class PortfolioManagerApp:
 
         self.base_dir = Path(__file__).resolve().parent
         self.records: list[StockRecord] = []
+        self.fallback_prediction_cache: dict[str, dict[str, float]] = {}
+        self.fallback_prediction_inflight: set[str] = set()
         self.meta_path: Path | None = None
         self.worker_thread: threading.Thread | None = None
         self.stop_event: threading.Event | None = None
@@ -1583,7 +1585,7 @@ class PortfolioManagerApp:
         # Treeview
         self.port_tree = ttk.Treeview(
             left,
-            columns=("ticker", "name", "sector", "price", "mcap", "czk", "pred", "q10", "q90"),
+            columns=("ticker", "name", "sector", "price", "mcap", "czk", "pred", "q10", "q90", "avg_below_q10", "avg_above_q90"),
             show="headings",
             height=8,
         )
@@ -1597,6 +1599,8 @@ class PortfolioManagerApp:
             "pred": "Predikce %",
             "q10": "Q10 %",
             "q90": "Q90 %",
+            "avg_below_q10": "Průměr <Q10 %",
+            "avg_above_q90": "Průměr >Q90 %",
         }
         for col, lab in p_headings.items():
             self.port_tree.heading(col, text=lab)
@@ -1722,6 +1726,14 @@ class PortfolioManagerApp:
                     self._finish_stopped_optimization()
                 elif kind == "charts_ready":
                     self._display_charts(event[1])
+                elif kind == "fallback_ready":
+                    _, data, tickers = event
+                    self.fallback_prediction_cache.update(data)
+                    for t in tickers:
+                        self.fallback_prediction_inflight.discard(t.upper())
+                    if data:
+                        self.log(f"Dopočítána fallback týdenní predikce pro {len(data)} tickerů.")
+                    self._refresh_portfolio_tree()
         except Empty:
             pass
         self.root.after(100, self._drain_ui_queue)
@@ -2046,21 +2058,78 @@ class PortfolioManagerApp:
         for item in self.port_tree.get_children():
             self.port_tree.delete(item)
         records_by_ticker = {record.ticker.upper(): record for record in self.records}
+        missing_fallback = [
+            t.upper()
+            for t in self.portfolio_dict.keys()
+            if t.upper() not in records_by_ticker
+            and t.upper() not in self.fallback_prediction_cache
+            and t.upper() not in self.fallback_prediction_inflight
+        ]
+        if missing_fallback:
+            self._load_fallback_predictions_async(missing_fallback)
         
         def update_rows(metadata):
             for t, amt in self.portfolio_dict.items():
                 meta = metadata.get(t, {"name": t, "sector": "N/A", "price": 0.0, "mcap": "0"})
                 record = records_by_ticker.get(t.upper())
-                pred = f"{record.forecast_pct * 100:.2f}" if record else "-"
-                q10 = f"{record.std_pct * 100:.2f}" if record else "-"
-                q90 = f"{record.upside_pct * 100:.2f}" if record else "-"
+                fallback = self.fallback_prediction_cache.get(t.upper())
+                pred = f"{record.forecast_pct * 100:.2f}" if record else (f"{fallback['pred'] * 100:.2f}" if fallback else "-")
+                q10 = f"{record.std_pct * 100:.2f}" if record else (f"{fallback['q10'] * 100:.2f}" if fallback else "-")
+                q90 = f"{record.upside_pct * 100:.2f}" if record else (f"{fallback['q90'] * 100:.2f}" if fallback else "-")
+                avg_below_q10 = f"{fallback['avg_below_q10'] * 100:.2f}" if fallback else "-"
+                avg_above_q90 = f"{fallback['avg_above_q90'] * 100:.2f}" if fallback else "-"
                 self.port_tree.insert(
                     "",
                     tk.END,
-                    values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}", pred, q10, q90),
+                    values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}", pred, q10, q90, avg_below_q10, avg_above_q90),
                 )
                 
         self.fetcher.fetch_async(list(self.portfolio_dict.keys()), lambda m: self.root.after(0, update_rows, m))
+
+    def _load_fallback_predictions_async(self, tickers: list[str]) -> None:
+        tickers = [t.upper() for t in tickers if t]
+        if not tickers:
+            return
+        self.fallback_prediction_inflight.update(tickers)
+
+        def worker():
+            data = self._compute_weekly_fallback_predictions(tickers)
+            self.ui_queue.put(("fallback_ready", data, tickers))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _compute_weekly_fallback_predictions(self, tickers: list[str]) -> dict[str, dict[str, float]]:
+        np = _load_numpy()
+        pd = _load_pandas()
+        yf = _load_yfinance()
+        if not yf:
+            return {}
+        try:
+            prices = yf.download(tickers, period="5y", interval="1wk", auto_adjust=True, progress=False)["Close"]
+        except Exception:
+            return {}
+        if isinstance(prices, pd.Series):
+            prices = prices.to_frame(name=tickers[0])
+
+        result: dict[str, dict[str, float]] = {}
+        for ticker in tickers:
+            if ticker not in prices.columns:
+                continue
+            weekly_returns = prices[ticker].dropna().pct_change().dropna()
+            if len(weekly_returns) < 20:
+                continue
+            q10 = float(weekly_returns.quantile(0.10))
+            q90 = float(weekly_returns.quantile(0.90))
+            below = weekly_returns[weekly_returns <= q10]
+            above = weekly_returns[weekly_returns >= q90]
+            result[ticker] = {
+                "pred": float(weekly_returns.mean()),
+                "q10": q10,
+                "q90": q90,
+                "avg_below_q10": float(np.nan_to_num(below.mean(), nan=0.0)),
+                "avg_above_q90": float(np.nan_to_num(above.mean(), nan=0.0)),
+            }
+        return result
 
     def _add_holding(self):
         t = self.add_ticker_var.get().upper().strip()
