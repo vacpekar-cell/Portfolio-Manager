@@ -2246,26 +2246,34 @@ class PortfolioManagerApp:
         import datetime
         now_str = datetime.datetime.now().isoformat()
         
-        # Calculate expected equity over time
+        # Calculate expected equity over horizons using per-position horizon data (including fallback records)
         total_cash = float(self.extra_cash_var.get())
         total_val = sum(self.portfolio_dict.values()) + total_cash
-        
-        expected_returns = []
-        for t in self.last_result.trades:
-            if t.target_czk > 0:
-                expected_returns.append(t.forecast_pct / 100.0) # Approx
-                
-        # Simplified: we use the overall expected return from the result
-        overall_expected = self.last_result.expected_profit_czk / max(1.0, total_val)
-        
+
+        horizons = [1, 4, 13, 26, 52]
+        expected_by_horizon = {w: 0.0 for w in horizons}
+        total_target = max(sum(max(t.target_czk, 0.0) for t in self.last_result.trades), 1e-9)
+
+        for trade in self.last_result.trades:
+            if trade.target_czk <= 0:
+                continue
+            weight = trade.target_czk / total_target
+            hdata = trade.horizon_data or {}
+            for w in horizons:
+                key = f"{w}w"
+                if key in hdata:
+                    pred = float(hdata[key][0])
+                else:
+                    pred = float(trade.forecast_pct)
+                expected_by_horizon[w] += pred * weight
+
         dates = []
         expected_vals = []
         now = datetime.datetime.now()
         
-        for w in [1, 4, 13, 26, 52]:
+        for w in horizons:
             dates.append((now + datetime.timedelta(weeks=w)).isoformat())
-            # Linearly scale the annual expected return
-            val = total_val * (1.0 + overall_expected * (w / 52.0))
+            val = total_val * (1.0 + expected_by_horizon[w])
             expected_vals.append(val)
             
         self.portfolio_projections.append({
