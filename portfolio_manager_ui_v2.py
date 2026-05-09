@@ -2516,9 +2516,30 @@ class PortfolioManagerApp:
             "sp500_czk": hist_equity,
             "now": now,
             "current_total": old_total,
+            "current_projection": self._build_projection_from_result(result, old_total) if result else None,
             "projections": self.portfolio_projections,
             "history": self.portfolio_history
         }
+
+    def _build_projection_from_result(self, result: OptimizationResult | None, total_val: float):
+        if result is None:
+            return None
+        import datetime
+        horizons = [1, 4, 13, 26, 52]
+        expected_by_horizon = {w: 0.0 for w in horizons}
+        total_target = max(sum(max(t.target_czk, 0.0) for t in result.trades), 1e-9)
+        for trade in result.trades:
+            if trade.target_czk <= 0:
+                continue
+            wgt = trade.target_czk / total_target
+            hdata = trade.horizon_data or {}
+            for w in horizons:
+                pred = float(hdata.get(f"{w}w", (trade.forecast_pct, 0.0, 0.0))[0])
+                expected_by_horizon[w] += pred * wgt
+        now = datetime.datetime.now()
+        dates = [(now + datetime.timedelta(weeks=w)).isoformat() for w in horizons]
+        expected = [total_val * (1.0 + expected_by_horizon[w]) for w in horizons]
+        return {"date": now.isoformat(), "start_value": total_val, "dates": dates, "expected": expected}
 
     def _display_charts(self, chart_data):
         self._set_busy(False, "Graf zobrazen.")
@@ -2527,8 +2548,9 @@ class PortfolioManagerApp:
         try:
             import matplotlib.pyplot as plt
             import matplotlib.dates as mdates
-            from dateutil import parser
-        except: return
+            import datetime
+        except:
+            return
 
         fig, ax = plt.subplots(figsize=(12, 7))
         
@@ -2538,7 +2560,7 @@ class PortfolioManagerApp:
 
         # Plot Real Equity History
         if chart_data["history"]:
-            hx = [parser.parse(h["timestamp"]) for h in chart_data["history"]]
+            hx = [datetime.datetime.fromisoformat(h["timestamp"]) for h in chart_data["history"] if "timestamp" in h]
             hy = [h["total_equity"] for h in chart_data["history"]]
             ax.plot(hx, hy, label="Reálná Hodnota Portfolia", color="blue", linewidth=2, marker="o")
 
@@ -2546,19 +2568,26 @@ class PortfolioManagerApp:
         colors = ["green", "orange", "purple", "brown", "pink"]
         for i, proj in enumerate(chart_data["projections"]):
             c = colors[i % len(colors)]
-            p_date = parser.parse(proj["date"])
+            p_date = datetime.datetime.fromisoformat(proj["date"])
             p_val = proj["start_value"]
             
             # Draw anchor point
             ax.plot([p_date], [p_val], marker="D", color=c)
             
             # Draw projections
-            px = [p_date] + [parser.parse(d) for d in proj.get("dates", [])]
+            px = [p_date] + [datetime.datetime.fromisoformat(d) for d in proj.get("dates", [])]
             py = [p_val] + proj.get("expected", [])
             ax.plot(px, py, color=c, linestyle="-", alpha=0.6, label=f"Predikce {p_date.strftime('%d.%m.%Y')}")
             
             if py and len(py) > 1:
                 ax.annotate(f"{py[-1]:.0f} CZK", xy=(px[-1], py[-1]), xytext=(5, 0), textcoords="offset points", color=c)
+
+        current_proj = chart_data.get("current_projection")
+        if current_proj:
+            p_date = datetime.datetime.fromisoformat(current_proj["date"])
+            px = [p_date] + [datetime.datetime.fromisoformat(d) for d in current_proj.get("dates", [])]
+            py = [current_proj["start_value"]] + current_proj.get("expected", [])
+            ax.plot(px, py, color="red", linewidth=2.5, alpha=0.8, label="Aktuální optimalizační predikce")
 
         ax.set_title("Vývoj Portfolia a Historické AI Predikce (Absolutní CZK)")
         ax.set_ylabel("Hodnota (CZK)")
