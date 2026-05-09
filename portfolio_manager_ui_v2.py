@@ -1543,6 +1543,7 @@ class PortfolioManagerApp:
         self.records: list[StockRecord] = []
         self.fallback_prediction_cache: dict[str, dict[str, float]] = {}
         self.fallback_prediction_inflight: set[str] = set()
+        self.fallback_uncertainty_by_ticker: dict[str, float] = {}
         self.meta_path: Path | None = None
         self.worker_thread: threading.Thread | None = None
         self.stop_event: threading.Event | None = None
@@ -1615,6 +1616,7 @@ class PortfolioManagerApp:
             self.port_tree.heading(col, text=lab)
             self.port_tree.column(col, width=60 if col != "name" else 120, anchor=tk.CENTER)
         self.port_tree.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        self.port_tree.bind("<<TreeviewSelect>>", self._on_portfolio_row_selected)
 
         self.portfolio_dict = {}
         self.portfolio_history = []
@@ -1654,7 +1656,7 @@ class PortfolioManagerApp:
         self.alpha_13w_var = tk.DoubleVar(value=0.8)
         self.alpha_26w_var = tk.DoubleVar(value=0.7)
         self.alpha_52w_var = tk.DoubleVar(value=0.5)
-        self.fallback_uncertainty_var = tk.DoubleVar(value=1.5)
+        self.fallback_uncertainty_var = tk.DoubleVar(value=1.0)
 
         self._add_labeled_entry(right, "Dodatečný kapitál (CZK)", self.extra_cash_var)
         self._add_labeled_entry(right, "Cílový počet akcií", self.target_positions_var)
@@ -1668,7 +1670,9 @@ class PortfolioManagerApp:
         self._add_labeled_entry(right, "Alfa 13w", self.alpha_13w_var)
         self._add_labeled_entry(right, "Alfa 26w", self.alpha_26w_var)
         self._add_labeled_entry(right, "Alfa 52w", self.alpha_52w_var)
-        self._add_labeled_entry(right, "Fallback nejistota", self.fallback_uncertainty_var)
+        ttk.Label(right, text="Fallback nejistota").pack(anchor=tk.W, pady=(4, 0))
+        self.fallback_uncertainty_entry = ttk.Entry(right, textvariable=self.fallback_uncertainty_var, width=24)
+        self.fallback_uncertainty_entry.pack(anchor=tk.W, fill=tk.X)
 
         table_frame = ttk.LabelFrame(main, text="Načtený vesmír akcií", padding=10)
         table_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 10))
@@ -2087,7 +2091,12 @@ class PortfolioManagerApp:
             and t.upper() not in self.fallback_prediction_inflight
         ]
         if missing_fallback:
-            self._load_fallback_predictions_async(missing_fallback, float(self.fallback_uncertainty_var.get() or 1.5))
+            by_scale: dict[float, list[str]] = {}
+            for t in missing_fallback:
+                scale = float(self.fallback_uncertainty_by_ticker.get(t, 1.0))
+                by_scale.setdefault(scale, []).append(t)
+            for scale, tickers in by_scale.items():
+                self._load_fallback_predictions_async(tickers, scale)
         
         def update_rows(metadata):
             for t, amt in self.portfolio_dict.items():
@@ -2101,7 +2110,7 @@ class PortfolioManagerApp:
                     q90_val = h52[2] if h52 else record.upside_pct
                     source = "AI (starší)" if record.is_synthetic else "AI"
                     pred = f"{pred_val * 100:.2f}"
-                    q10 = f"{q10_val * 100:.2f}"
+                    q10 = f"{(-abs(q10_val)) * 100:.2f}"
                     q90 = f"{q90_val * 100:.2f}"
                 else:
                     pred = f"{fallback['52w_pred'] * 100:.2f}" if fallback else "-"
@@ -2115,6 +2124,25 @@ class PortfolioManagerApp:
                 )
                 
         self.fetcher.fetch_async(list(self.portfolio_dict.keys()), lambda m: self.root.after(0, update_rows, m))
+
+    def _on_portfolio_row_selected(self, _event=None):
+        selected = self.port_tree.selection()
+        if not selected:
+            return
+        values = self.port_tree.item(selected[0], "values")
+        if not values:
+            return
+        ticker = str(values[0]).upper()
+        amount = self.portfolio_dict.get(ticker, 0.0)
+        source = str(values[-1]) if len(values) > 0 else ""
+        self.add_ticker_var.set(ticker)
+        self.add_amount_var.set(f"{amount:.2f}")
+        if source.startswith("AI"):
+            self.fallback_uncertainty_entry.configure(state=tk.DISABLED)
+            self.fallback_uncertainty_var.set(1.0)
+        else:
+            self.fallback_uncertainty_entry.configure(state=tk.NORMAL)
+            self.fallback_uncertainty_var.set(float(self.fallback_uncertainty_by_ticker.get(ticker, 1.0)))
 
     def _load_fallback_predictions_async(self, tickers: list[str], uncertainty_scale: float = 1.5) -> None:
         tickers = [t.upper() for t in tickers if t]
@@ -2221,6 +2249,13 @@ class PortfolioManagerApp:
         try:
             amt = float(amt_str)
             self.portfolio_dict[t] = amt
+            record_map = {r.ticker for r in self.records}
+            if t not in record_map:
+                uncertainty = float(self.fallback_uncertainty_var.get() or 1.0)
+                self.fallback_uncertainty_by_ticker[t] = uncertainty
+                self.fallback_prediction_inflight.discard(t)
+                self.fallback_prediction_cache.pop(t, None)
+                self._load_fallback_predictions_async([t], uncertainty_scale=uncertainty)
             self._refresh_portfolio_tree()
             self.add_ticker_var.set("")
             self.add_amount_var.set("")
