@@ -140,6 +140,19 @@ def _safe_float(value, default: float = 0.0) -> float:
     return float(value)
 
 
+def _starr_score(expected_return: float, tail_risk: float, negative_penalty: float = 1.0) -> float:
+    """STARR-like score robust for negative expected returns.
+
+    For positive returns: classic return / tail-risk.
+    For negative returns: adds explicit downside penalty so larger risk is always worse.
+    """
+    tail = max(abs(float(tail_risk)), 1e-6)
+    exp_ret = float(expected_return)
+    if exp_ret >= 0:
+        return exp_ret / tail
+    return (exp_ret / tail) - negative_penalty * tail
+
+
 def _project_to_simplex(weights: np.ndarray) -> np.ndarray:
     np = _load_numpy()
     vector = np.asarray(weights, dtype=float)
@@ -1061,11 +1074,8 @@ def load_historical_meta_and_calculate_ema(base_dir: Path, alphas: dict[str, flo
             
             agg_std = max(agg_std, 1e-6)
             
-            # Return/CVaR ratio: čistý poměr výnosu vůči tail-risku
-            if agg_pred <= 0:
-                sharpe = -999.0  # Tvrdé vyřazení záporných výnosů z nákupního poolu
-            else:
-                sharpe = agg_pred / max(abs(agg_std), 1e-6)
+            # STARR-like score with negative-return penalty.
+            sharpe = _starr_score(agg_pred, agg_std)
             
             if np.isfinite(sharpe) and np.isfinite(agg_pred) and np.isfinite(agg_std):
                 records.append(StockRecord(
@@ -1839,8 +1849,7 @@ class PortfolioManagerApp:
                         rec.std_pct = downside
                         rec.upside_pct = upside_bonus
                         rec.forecast_pct = mean_val
-                        # STARR aproximace: očekávaný výnos / tail-risk
-                        rec.sharpe = rec.forecast_pct / max(downside, 1e-6)
+                        rec.sharpe = _starr_score(rec.forecast_pct, downside)
                         updates += 1
                         
             # Re-sort a update UI
@@ -2195,7 +2204,7 @@ class PortfolioManagerApp:
             records.append(
                 StockRecord(
                     ticker=ticker,
-                    sharpe=float(data["pred"] / downside),
+                    sharpe=float(_starr_score(data["pred"], downside)),
                     forecast_pct=float(data["pred"]),
                     std_pct=downside,
                     upside_pct=max(0.0, float(data["q90"])),
