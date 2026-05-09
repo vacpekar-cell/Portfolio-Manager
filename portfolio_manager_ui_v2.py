@@ -1664,7 +1664,7 @@ class PortfolioManagerApp:
         table_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 10))
 
         self.tree = ttk.Treeview(table_frame, columns=("ticker", "sharpe", "forecast", "q10", "q90"), show="headings", height=10)
-        headings = {"ticker": "Ticker", "sharpe": "Sharpe", "forecast": "Oček. výnos %", "q10": "Downside %", "q90": "Upside %"}
+        headings = {"ticker": "Ticker", "sharpe": "STARR", "forecast": "Oček. výnos %", "q10": "Tail risk %", "q90": "Upside %"}
         for column, label in headings.items():
             self.tree.heading(column, text=label)
             self.tree.column(column, width=100 if column != "ticker" else 90, anchor=tk.CENTER)
@@ -1831,16 +1831,15 @@ class PortfolioManagerApp:
                     mean_val = row.get("mean_1w")
                     
                     if pd.notna(q10_val) and pd.notna(mean_val):
-                        # q10/q90 jsou reziduály (odchylky od predikce)
-                        # q10 je typicky záporný -> downside = abs(q10)
-                        # q90 je typicky kladný -> upside = max(0, q90)
-                        downside = max(1e-6, max(1e-6, mean_val - q10_val))
-                        upside_bonus = max(0.0, q90_val - mean_val) if pd.notna(q90_val) else 0.0
+                        # CSV hodnoty bereme jako absolutní výnosové metriky.
+                        # Pro STARR používáme konzistentně tail-risk = abs(CVaR10 / q10 tail).
+                        downside = max(1e-6, abs(float(q10_val)))
+                        upside_bonus = max(0.0, float(q90_val)) if pd.notna(q90_val) else 0.0
                         
                         rec.std_pct = downside
                         rec.upside_pct = upside_bonus
                         rec.forecast_pct = mean_val
-                        # Modifikovany asymetricky cil (Čistá střední hodnota / Downside)
+                        # STARR aproximace: očekávaný výnos / tail-risk
                         rec.sharpe = rec.forecast_pct / max(downside, 1e-6)
                         updates += 1
                         
