@@ -2535,6 +2535,45 @@ class PortfolioManagerApp:
 
         import datetime
         now = datetime.datetime.now()
+
+        synthetic_pre_dates = []
+        synthetic_pre_equity = []
+        anchor_dates = []
+        if self.portfolio_history:
+            try:
+                anchor_dates.extend([datetime.datetime.fromisoformat(h["timestamp"]) for h in self.portfolio_history if "timestamp" in h])
+            except Exception:
+                pass
+        if self.portfolio_projections:
+            try:
+                anchor_dates.extend([datetime.datetime.fromisoformat(p["date"]) for p in self.portfolio_projections if "date" in p])
+            except Exception:
+                pass
+        anchor_dt = min(anchor_dates) if anchor_dates else now
+        anchor_value = self.portfolio_history[0]["total_equity"] if self.portfolio_history else old_total
+        # Synthetic pre-history from current holdings before first real portfolio point
+        try:
+            if valid_tickers:
+                long_start = pd.Timestamp(anchor_dt) - pd.DateOffset(years=3)
+                raw = yf.download(valid_tickers, start=long_start, end=pd.Timestamp(anchor_dt), progress=False)["Close"]
+                if isinstance(raw, pd.Series):
+                    raw = raw.to_frame(name=valid_tickers[0])
+                if not raw.empty:
+                    port_series = None
+                    for t in valid_tickers:
+                        if t in raw.columns:
+                            base = raw[t].dropna()
+                            if base.empty:
+                                continue
+                            rel = base / base.iloc[-1]
+                            weight = old_holdings.get(t, 0.0)
+                            contrib = rel * weight
+                            port_series = contrib if port_series is None else port_series.add(contrib, fill_value=0.0)
+                    if port_series is not None and not port_series.empty:
+                        synthetic_pre_dates = list(port_series.index.to_pydatetime())
+                        synthetic_pre_equity = (port_series / max(port_series.iloc[-1], 1e-9) * float(anchor_value)).tolist()
+        except Exception:
+            pass
         
         # Build current projection if we have records
         proj_dates = []
@@ -2554,7 +2593,9 @@ class PortfolioManagerApp:
             "current_total": old_total,
             "current_projection": self._build_projection_from_result(result, old_total) if result else None,
             "projections": self.portfolio_projections,
-            "history": self.portfolio_history
+            "history": self.portfolio_history,
+            "synthetic_pre_dates": synthetic_pre_dates,
+            "synthetic_pre_equity": synthetic_pre_equity,
         }
 
     def _build_projection_from_result(self, result: OptimizationResult | None, total_val: float):
@@ -2598,6 +2639,17 @@ class PortfolioManagerApp:
             toggle_artists["Benchmark"] = [ln]
 
         # Plot Real Equity History
+        if chart_data.get("synthetic_pre_equity"):
+            ln, = ax.plot(
+                chart_data.get("synthetic_pre_dates", []),
+                chart_data.get("synthetic_pre_equity", []),
+                label="Historie portfolia (syntetická před založením)",
+                color="teal",
+                linewidth=1.8,
+                linestyle=":",
+            )
+            toggle_artists["Historie před založením"] = [ln]
+
         if chart_data["history"]:
             hx = [datetime.datetime.fromisoformat(h["timestamp"]) for h in chart_data["history"] if "timestamp" in h]
             hy = [h["total_equity"] for h in chart_data["history"]]
