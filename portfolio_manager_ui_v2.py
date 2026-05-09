@@ -1541,9 +1541,11 @@ class PortfolioManagerApp:
 
         self.base_dir = Path(__file__).resolve().parent
         self.records: list[StockRecord] = []
-        self.fallback_prediction_cache: dict[str, dict[str, float]] = {}
+        self.fallback_prediction_cache: dict[str, dict] = {}
         self.fallback_prediction_inflight: set[str] = set()
         self.fallback_uncertainty_by_ticker: dict[str, float] = {}
+        self.fallback_prediction_failures: dict[str, int] = {}
+        self.fallback_max_retries = 3
         self.meta_path: Path | None = None
         self.worker_thread: threading.Thread | None = None
         self.stop_event: threading.Event | None = None
@@ -1751,8 +1753,18 @@ class PortfolioManagerApp:
                     self.fallback_prediction_cache.update(data)
                     for t in tickers:
                         self.fallback_prediction_inflight.discard(t.upper())
+                        if t.upper() in data:
+                            self.fallback_prediction_failures.pop(t.upper(), None)
+                        else:
+                            fails = self.fallback_prediction_failures.get(t.upper(), 0) + 1
+                            self.fallback_prediction_failures[t.upper()] = fails
+                            if fails >= self.fallback_max_retries:
+                                self.fallback_prediction_cache[t.upper()] = {"not_found": True}
                     if data:
                         self.log(f"Dopočítána fallback týdenní predikce pro {len(data)} tickerů.")
+                    if tickers and len(data) < len(tickers):
+                        missing_cnt = len(tickers) - len(data)
+                        self.log(f"Fallback predikce nenalezena pro {missing_cnt} tickerů (po {self.fallback_max_retries} pokusech označeno jako nenalezeno).")
                     self._refresh_portfolio_tree()
         except Empty:
             pass
@@ -2094,6 +2106,7 @@ class PortfolioManagerApp:
             if t.upper() not in records_by_ticker
             and t.upper() not in self.fallback_prediction_cache
             and t.upper() not in self.fallback_prediction_inflight
+            and self.fallback_prediction_failures.get(t.upper(), 0) < self.fallback_max_retries
         ]
         if missing_fallback:
             by_scale: dict[float, list[str]] = {}
@@ -2121,10 +2134,13 @@ class PortfolioManagerApp:
                     q10 = f"{(-abs(q10_val)) * 100:.2f}"
                     q90 = f"{q90_val * 100:.2f}"
                 else:
-                    pred = f"{fallback['52w_pred'] * 100:.2f}" if fallback else "-"
-                    q10 = f"{fallback['52w_q10'] * 100:.2f}" if fallback else "-"
-                    q90 = f"{fallback['52w_q90'] * 100:.2f}" if fallback else "-"
-                    source = "Fallback historie" if fallback else "-"
+                    if fallback and fallback.get("not_found"):
+                        pred, q10, q90, source = "-", "-", "-", "Ticker nenalezen"
+                    else:
+                        pred = f"{fallback['52w_pred'] * 100:.2f}" if fallback else "-"
+                        q10 = f"{fallback['52w_q10'] * 100:.2f}" if fallback else "-"
+                        q90 = f"{fallback['52w_q90'] * 100:.2f}" if fallback else "-"
+                        source = "Fallback historie" if fallback else "-"
                 self.port_tree.insert(
                     "",
                     tk.END,
