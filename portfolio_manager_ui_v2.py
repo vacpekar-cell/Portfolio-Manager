@@ -1987,7 +1987,19 @@ class PortfolioManagerApp:
         self.log(f"Optimalizace hotova. Cílové Sharpe: {result.sharpe:.3f}")
         self._log_trade_changes(result)
         self._append_current_equity_snapshot()
+        self._store_original_and_optimized_projections(result)
         self._start_chart_computation(result, None)
+
+    def _store_original_and_optimized_projections(self, result: OptimizationResult):
+        import datetime
+        now = datetime.datetime.now().isoformat()
+        current_projection = self._compose_projection_from_holdings(self.portfolio_dict, label="Původní portfolio", source="current", created_at=now)
+        if current_projection:
+            self.portfolio_projections.append(current_projection)
+        optimized_holdings = {t.ticker: max(0.0, float(t.target_czk)) for t in result.trades if t.target_czk > 0}
+        optimized_projection = self._compose_projection_from_holdings(optimized_holdings, label="Optimalizované portfolio", source="optimized", created_at=now)
+        if optimized_projection:
+            self.portfolio_projections.append(optimized_projection)
 
     def _append_current_equity_snapshot(self):
         import datetime
@@ -2327,53 +2339,55 @@ class PortfolioManagerApp:
 
 
     def _pin_prediction(self):
-        if not self.last_result:
-            from tkinter import messagebox
-            messagebox.showinfo("Chyba", "Nejprve spusťte optimalizaci pro vytvoření predikce.")
-            return
-            
         import datetime
         now_str = datetime.datetime.now().isoformat()
-        
-        # Calculate expected equity over horizons using per-position horizon data (including fallback records)
-        total_cash = float(self.extra_cash_var.get())
-        total_val = sum(self.portfolio_dict.values()) + total_cash
-
-        horizons = [1, 4, 13, 26, 52]
-        expected_by_horizon = {w: 0.0 for w in horizons}
-        total_target = max(sum(max(t.target_czk, 0.0) for t in self.last_result.trades), 1e-9)
-
-        for trade in self.last_result.trades:
-            if trade.target_czk <= 0:
-                continue
-            weight = trade.target_czk / total_target
-            hdata = trade.horizon_data or {}
-            for w in horizons:
-                key = f"{w}w"
-                if key in hdata:
-                    pred = float(hdata[key][0])
-                else:
-                    pred = float(trade.forecast_pct)
-                expected_by_horizon[w] += pred * weight
-
-        dates = []
-        expected_vals = []
-        now = datetime.datetime.now()
-        
-        for w in horizons:
-            dates.append((now + datetime.timedelta(weeks=w)).isoformat())
-            val = total_val * (1.0 + expected_by_horizon[w])
-            expected_vals.append(val)
-            
-        self.portfolio_projections.append({
-            "date": now_str,
-            "start_value": total_val,
-            "dates": dates,
-            "expected": expected_vals
-        })
+        projection = self._compose_projection_from_holdings(
+            self.portfolio_dict,
+            label="Custom portfolio snapshot",
+            source="custom",
+            created_at=now_str,
+        )
+        if projection:
+            self.portfolio_projections.append(projection)
         self._save_portfolio()
         from tkinter import messagebox
         messagebox.showinfo("Hotovo", "Aktuální predikce byla připnuta k portfoliu!")
+
+    def _compose_projection_from_holdings(self, holdings: dict[str, float], label: str, source: str, created_at: str):
+        import datetime
+        if not holdings:
+            return None
+        horizons = [1, 4, 13, 26, 52]
+        rec_map = {r.ticker.upper(): r for r in self.records}
+        needed_fallback = [t.upper() for t in holdings if t.upper() not in rec_map]
+        if needed_fallback:
+            scale = float(self.fallback_uncertainty_var.get() or 1.0)
+            fresh = self._compute_weekly_fallback_predictions(needed_fallback, scale)
+            self.fallback_prediction_cache.update(fresh)
+        total_val = sum(float(v) for v in holdings.values()) + float(self.extra_cash_var.get() or 0.0)
+        if total_val <= 0:
+            return None
+        agg_p = {w: 0.0 for w in horizons}
+        agg_q10 = {w: 0.0 for w in horizons}
+        agg_q90 = {w: 0.0 for w in horizons}
+        for ticker, amt in holdings.items():
+            wt = float(amt) / total_val
+            rec = rec_map.get(ticker.upper())
+            if rec and rec.horizon_data:
+                hdata = rec.horizon_data
+            else:
+                hdata = self.fallback_prediction_cache.get(ticker.upper(), {}).get("horizon_data", {})
+            for w in horizons:
+                p, q10, q90 = hdata.get(f"{w}w", (0.0, 0.0, 0.0))
+                agg_p[w] += float(p) * wt
+                agg_q10[w] += float(q10) * wt
+                agg_q90[w] += float(q90) * wt
+        created_dt = datetime.datetime.fromisoformat(created_at)
+        dates = [(created_dt + datetime.timedelta(weeks=w)).isoformat() for w in horizons]
+        expected = [total_val * (1.0 + agg_p[w]) for w in horizons]
+        q10_vals = [total_val * (1.0 + agg_q10[w]) for w in horizons]
+        q90_vals = [total_val * (1.0 + agg_q90[w]) for w in horizons]
+        return {"date": created_at, "label": label, "source": source, "start_value": total_val, "dates": dates, "expected": expected, "q10": q10_vals, "q90": q90_vals}
 
     def _open_apply_trades_dialog(self):
         if not self.last_result: return
@@ -2600,6 +2614,12 @@ class PortfolioManagerApp:
             px = [p_date] + [datetime.datetime.fromisoformat(d) for d in proj.get("dates", [])]
             py = [p_val] + proj.get("expected", [])
             ax.plot(px, py, color=c, linestyle="-", alpha=0.6, label=f"Predikce {p_date.strftime('%d.%m.%Y')}")
+            q10 = proj.get("q10", [])
+            q90 = proj.get("q90", [])
+            if q10 and q90 and len(q10) == len(py) - 1 and len(q90) == len(py) - 1:
+                low = [p_val] + q10
+                high = [p_val] + q90
+                ax.fill_between(px, low, high, color=c, alpha=0.12)
             
             if py and len(py) > 1:
                 ax.annotate(f"{py[-1]:.0f} CZK", xy=(px[-1], py[-1]), xytext=(5, 0), textcoords="offset points", color=c)
