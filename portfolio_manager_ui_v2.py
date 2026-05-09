@@ -2585,20 +2585,24 @@ class PortfolioManagerApp:
             import matplotlib.pyplot as plt
             import matplotlib.dates as mdates
             import datetime
+            from matplotlib.widgets import CheckButtons
         except:
             return
 
         fig, ax = plt.subplots(figsize=(12, 7))
         
         # Plot SP500 Benchmark
+        toggle_artists: dict[str, list] = {}
         if chart_data["sp500_czk"]:
-            ax.plot(chart_data["hist_dates"], chart_data["sp500_czk"], label="S&P 500 Benchmark (CZK ekvivalent)", color="black", alpha=0.3, linestyle="--")
+            ln, = ax.plot(chart_data["hist_dates"], chart_data["sp500_czk"], label="S&P 500 Benchmark (CZK ekvivalent)", color="black", alpha=0.3, linestyle="--")
+            toggle_artists["Benchmark"] = [ln]
 
         # Plot Real Equity History
         if chart_data["history"]:
             hx = [datetime.datetime.fromisoformat(h["timestamp"]) for h in chart_data["history"] if "timestamp" in h]
             hy = [h["total_equity"] for h in chart_data["history"]]
-            ax.plot(hx, hy, label="Reálná Hodnota Portfolia", color="blue", linewidth=2, marker="o")
+            ln, = ax.plot(hx, hy, label="Reálná Hodnota Portfolia", color="blue", linewidth=2, marker="o")
+            toggle_artists["Historie"] = [ln]
 
         # Plot Saved Projections
         colors = ["green", "orange", "purple", "brown", "pink"]
@@ -2608,18 +2612,21 @@ class PortfolioManagerApp:
             p_val = proj["start_value"]
             
             # Draw anchor point
-            ax.plot([p_date], [p_val], marker="D", color=c)
+            anchor, = ax.plot([p_date], [p_val], marker="D", color=c)
             
             # Draw projections
             px = [p_date] + [datetime.datetime.fromisoformat(d) for d in proj.get("dates", [])]
             py = [p_val] + proj.get("expected", [])
-            ax.plot(px, py, color=c, linestyle="-", alpha=0.6, label=f"Predikce {p_date.strftime('%d.%m.%Y')}")
+            ln, = ax.plot(px, py, color=c, linestyle="-", alpha=0.6, label=f"Predikce {p_date.strftime('%d.%m.%Y')}")
+            group = [anchor, ln]
             q10 = proj.get("q10", [])
             q90 = proj.get("q90", [])
             if q10 and q90 and len(q10) == len(py) - 1 and len(q90) == len(py) - 1:
                 low = [p_val] + q10
                 high = [p_val] + q90
-                ax.fill_between(px, low, high, color=c, alpha=0.12)
+                fan = ax.fill_between(px, low, high, color=c, alpha=0.12)
+                group.append(fan)
+            toggle_artists[proj.get("label", f"Predikce {p_date.strftime('%d.%m.%Y')}")] = group
             
             if py and len(py) > 1:
                 ax.annotate(f"{py[-1]:.0f} CZK", xy=(px[-1], py[-1]), xytext=(5, 0), textcoords="offset points", color=c)
@@ -2629,13 +2636,30 @@ class PortfolioManagerApp:
             p_date = datetime.datetime.fromisoformat(current_proj["date"])
             px = [p_date] + [datetime.datetime.fromisoformat(d) for d in current_proj.get("dates", [])]
             py = [current_proj["start_value"]] + current_proj.get("expected", [])
-            ax.plot(px, py, color="red", linewidth=2.5, alpha=0.8, label="Aktuální optimalizační predikce")
+            ln, = ax.plot(px, py, color="red", linewidth=2.5, alpha=0.8, label="Aktuální optimalizační predikce")
+            toggle_artists["Aktuální optimalizační predikce"] = [ln]
 
         ax.set_title("Vývoj Portfolia a Historické AI Predikce (Absolutní CZK)")
         ax.set_ylabel("Hodnota (CZK)")
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
         ax.grid(True, alpha=0.3)
         ax.legend()
+
+        # Checkbox panel for large number of prediction lines
+        if toggle_artists:
+            fig.subplots_adjust(right=0.78)
+            rax = fig.add_axes([0.80, 0.10, 0.19, 0.80])
+            labels = list(toggle_artists.keys())
+            visibility = [True] * len(labels)
+            check = CheckButtons(rax, labels, visibility)
+            rax.set_title("Zobrazit")
+
+            def toggle(label):
+                for artist in toggle_artists.get(label, []):
+                    artist.set_visible(not artist.get_visible())
+                fig.canvas.draw_idle()
+
+            check.on_clicked(toggle)
         plt.tight_layout()
         plt.show()
 
