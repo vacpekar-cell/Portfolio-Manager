@@ -2162,7 +2162,7 @@ class PortfolioManagerApp:
         if not yf:
             return {}
         try:
-            prices = yf.download(tickers, period="5y", interval="1wk", auto_adjust=True, progress=False)["Close"]
+            prices = yf.download(tickers, period="10y", interval="1wk", auto_adjust=True, progress=False)["Close"]
         except Exception:
             return {}
         if isinstance(prices, pd.Series):
