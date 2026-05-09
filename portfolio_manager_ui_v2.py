@@ -1645,6 +1645,7 @@ class PortfolioManagerApp:
         self.alpha_13w_var = tk.DoubleVar(value=0.8)
         self.alpha_26w_var = tk.DoubleVar(value=0.7)
         self.alpha_52w_var = tk.DoubleVar(value=0.5)
+        self.fallback_uncertainty_var = tk.DoubleVar(value=1.5)
 
         self._add_labeled_entry(right, "Dodatečný kapitál (CZK)", self.extra_cash_var)
         self._add_labeled_entry(right, "Cílový počet akcií", self.target_positions_var)
@@ -1658,6 +1659,7 @@ class PortfolioManagerApp:
         self._add_labeled_entry(right, "Alfa 13w", self.alpha_13w_var)
         self._add_labeled_entry(right, "Alfa 26w", self.alpha_26w_var)
         self._add_labeled_entry(right, "Alfa 52w", self.alpha_52w_var)
+        self._add_labeled_entry(right, "Fallback nejistota", self.fallback_uncertainty_var)
 
         table_frame = ttk.LabelFrame(main, text="Načtený vesmír akcií", padding=10)
         table_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 10))
@@ -1872,6 +1874,7 @@ class PortfolioManagerApp:
             max_swaps = self.max_swaps_var.get().strip()
             sale_penalty_rate = float(self.sale_penalty_var.get())
             min_trade_czk = _safe_float(self.min_trade_var.get(), default=25.0)
+            fallback_uncertainty = float(self.fallback_uncertainty_var.get())
         except Exception as exc:
             messagebox.showerror("Chyba vstupu", str(exc))
             return
@@ -1897,6 +1900,9 @@ class PortfolioManagerApp:
         if min_trade_czk < 0:
             messagebox.showerror("Chyba vstupu", "Minimální obchod nemůže být záporný.")
             return
+        if fallback_uncertainty <= 0:
+            messagebox.showerror("Chyba vstupu", "Fallback nejistota musí být kladná.")
+            return
 
         max_turnover_czk = None if not max_turnover else _safe_float(max_turnover)
         max_swaps_int = None if not max_swaps else int(_safe_float(max_swaps))
@@ -1908,8 +1914,16 @@ class PortfolioManagerApp:
 
         def worker():
             try:
+                base_records = list(self.records)
+                fallback_records = self._build_fallback_records_for_holdings(holdings, fallback_uncertainty)
+                all_records = base_records + fallback_records
+                if fallback_records:
+                    self.log(
+                        f"Používám fallback týdenní predikce pro {len(fallback_records)} chybějících tickerů "
+                        f"(jen pro existující pozice, bez nákupu nových)."
+                    )
                 manager = PortfolioManager(
-                    records=self.records,
+                    records=all_records,
                     current_holdings_czk=holdings,
                     extra_cash_czk=extra_cash_czk,
                     target_positions=target_positions,
@@ -2066,7 +2080,7 @@ class PortfolioManagerApp:
             and t.upper() not in self.fallback_prediction_inflight
         ]
         if missing_fallback:
-            self._load_fallback_predictions_async(missing_fallback)
+            self._load_fallback_predictions_async(missing_fallback, float(self.fallback_uncertainty_var.get() or 1.5))
         
         def update_rows(metadata):
             for t, amt in self.portfolio_dict.items():
@@ -2086,19 +2100,19 @@ class PortfolioManagerApp:
                 
         self.fetcher.fetch_async(list(self.portfolio_dict.keys()), lambda m: self.root.after(0, update_rows, m))
 
-    def _load_fallback_predictions_async(self, tickers: list[str]) -> None:
+    def _load_fallback_predictions_async(self, tickers: list[str], uncertainty_scale: float = 1.5) -> None:
         tickers = [t.upper() for t in tickers if t]
         if not tickers:
             return
         self.fallback_prediction_inflight.update(tickers)
 
         def worker():
-            data = self._compute_weekly_fallback_predictions(tickers)
+            data = self._compute_weekly_fallback_predictions(tickers, uncertainty_scale=uncertainty_scale)
             self.ui_queue.put(("fallback_ready", data, tickers))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _compute_weekly_fallback_predictions(self, tickers: list[str]) -> dict[str, dict[str, float]]:
+    def _compute_weekly_fallback_predictions(self, tickers: list[str], uncertainty_scale: float = 1.5) -> dict[str, dict[str, float]]:
         np = _load_numpy()
         pd = _load_pandas()
         yf = _load_yfinance()
@@ -2118,18 +2132,48 @@ class PortfolioManagerApp:
             weekly_returns = prices[ticker].dropna().pct_change().dropna()
             if len(weekly_returns) < 20:
                 continue
-            q10 = float(weekly_returns.quantile(0.10))
-            q90 = float(weekly_returns.quantile(0.90))
-            below = weekly_returns[weekly_returns <= q10]
-            above = weekly_returns[weekly_returns >= q90]
+            raw_q10 = float(weekly_returns.quantile(0.10))
+            raw_q90 = float(weekly_returns.quantile(0.90))
+            below = weekly_returns[weekly_returns <= raw_q10]
+            above = weekly_returns[weekly_returns >= raw_q90]
             result[ticker] = {
                 "pred": float(weekly_returns.mean()),
-                "q10": q10,
-                "q90": q90,
-                "avg_below_q10": float(np.nan_to_num(below.mean(), nan=0.0)),
-                "avg_above_q90": float(np.nan_to_num(above.mean(), nan=0.0)),
+                "q10": raw_q10 * uncertainty_scale,
+                "q90": raw_q90 * uncertainty_scale,
+                "avg_below_q10": float(np.nan_to_num(below.mean(), nan=0.0)) * uncertainty_scale,
+                "avg_above_q90": float(np.nan_to_num(above.mean(), nan=0.0)) * uncertainty_scale,
             }
         return result
+
+    def _build_fallback_records_for_holdings(self, holdings: dict[str, float], uncertainty_scale: float) -> list[StockRecord]:
+        missing = [t.upper() for t in holdings.keys() if t.upper() not in {r.ticker for r in self.records}]
+        if not missing:
+            return []
+        fallback_data = self._compute_weekly_fallback_predictions(missing, uncertainty_scale=uncertainty_scale)
+        records: list[StockRecord] = []
+        for ticker in missing:
+            data = fallback_data.get(ticker)
+            if not data:
+                continue
+            downside = max(1e-6, abs(data["q10"]))
+            records.append(
+                StockRecord(
+                    ticker=ticker,
+                    sharpe=float(data["pred"] / downside),
+                    forecast_pct=float(data["pred"]),
+                    std_pct=downside,
+                    upside_pct=max(0.0, float(data["q90"])),
+                    is_synthetic=True,
+                    horizon_data={
+                        "1w": (
+                            float(data["pred"]),
+                            float(data["avg_below_q10"]),
+                            float(data["avg_above_q90"]),
+                        )
+                    },
+                )
+            )
+        return records
 
     def _add_holding(self):
         t = self.add_ticker_var.get().upper().strip()
