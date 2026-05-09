@@ -1596,7 +1596,7 @@ class PortfolioManagerApp:
         # Treeview
         self.port_tree = ttk.Treeview(
             left,
-            columns=("ticker", "name", "sector", "price", "mcap", "czk", "pred", "q10", "q90", "source"),
+            columns=("ticker", "name", "sector", "price", "mcap", "czk", "weight", "pred", "q10", "q90", "source"),
             show="headings",
             height=8,
         )
@@ -1607,14 +1607,19 @@ class PortfolioManagerApp:
             "price": "Cena USD",
             "mcap": "Market Cap",
             "czk": "Hodnota CZK",
+            "weight": "Podíl %",
             "pred": "Predikce %",
             "q10": "Q10 %",
             "q90": "Q90 %",
             "source": "Zdroj",
         }
+        col_widths = {
+            "ticker": 70, "name": 145, "sector": 90, "price": 75, "mcap": 85,
+            "czk": 100, "weight": 75, "pred": 75, "q10": 70, "q90": 70, "source": 95
+        }
         for col, lab in p_headings.items():
             self.port_tree.heading(col, text=lab)
-            self.port_tree.column(col, width=60 if col != "name" else 120, anchor=tk.CENTER)
+            self.port_tree.column(col, width=col_widths.get(col, 80), anchor=tk.CENTER)
         self.port_tree.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
         self.port_tree.bind("<<TreeviewSelect>>", self._on_portfolio_row_selected)
 
@@ -2099,10 +2104,13 @@ class PortfolioManagerApp:
                 self._load_fallback_predictions_async(tickers, scale)
         
         def update_rows(metadata):
-            for t, amt in self.portfolio_dict.items():
+            total_value = max(sum(self.portfolio_dict.values()), 1e-9)
+            sorted_positions = sorted(self.portfolio_dict.items(), key=lambda x: x[1], reverse=True)
+            for t, amt in sorted_positions:
                 meta = metadata.get(t, {"name": t, "sector": "N/A", "price": 0.0, "mcap": "0"})
                 record = records_by_ticker.get(t.upper())
                 fallback = self.fallback_prediction_cache.get(t.upper())
+                weight = (amt / total_value) * 100.0
                 if record:
                     h52 = (record.horizon_data or {}).get("52w")
                     pred_val = h52[0] if h52 else record.forecast_pct
@@ -2120,7 +2128,7 @@ class PortfolioManagerApp:
                 self.port_tree.insert(
                     "",
                     tk.END,
-                    values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}", pred, q10, q90, source),
+                    values=(t, meta["name"], meta["sector"], f"{meta['price']:.2f}", meta["mcap"], f"{amt:.2f}", f"{weight:.2f}", pred, q10, q90, source),
                 )
                 
         self.fetcher.fetch_async(list(self.portfolio_dict.keys()), lambda m: self.root.after(0, update_rows, m))
