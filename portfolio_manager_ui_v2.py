@@ -2327,3 +2327,13 @@ class PortfolioManagerApp:
         # Save the current state as a projection snapshot if we have a new one
         # To do this correctly, we add a button in the UI.
 
+
+
+def main() -> None:
+    root = tk.Tk()
+    PortfolioManagerApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
