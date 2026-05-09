@@ -1985,7 +1985,29 @@ class PortfolioManagerApp:
         self.last_result = result
         self.apply_btn.config(state=tk.NORMAL)
         self.log(f"Optimalizace hotova. Cílové Sharpe: {result.sharpe:.3f}")
+        self._log_trade_changes(result)
+        self._append_current_equity_snapshot()
         self._start_chart_computation(result, None)
+
+    def _append_current_equity_snapshot(self):
+        import datetime
+        total_cash = float(self.extra_cash_var.get() or 0.0)
+        total_eq = total_cash + sum(float(v) for v in self.portfolio_dict.values())
+        self.portfolio_history.append(
+            {"timestamp": datetime.datetime.now().isoformat(), "total_equity": float(total_eq)}
+        )
+
+    def _log_trade_changes(self, result: OptimizationResult):
+        changes = [t for t in result.trades if abs(t.delta_czk) >= max(1e-9, result.min_trade_czk)]
+        if not changes:
+            self.log("Změny portfolia: bez významných změn.")
+            return
+        self.log("Změny portfolia (návrh):")
+        for t in sorted(changes, key=lambda x: abs(x.delta_czk), reverse=True)[:40]:
+            self.log(
+                f" - {t.ticker}: {t.action} {abs(t.delta_czk):.0f} CZK "
+                f"(aktuálně {t.current_czk:.0f} -> cíl {t.target_czk:.0f})"
+            )
 
     def _handle_optimization_error(self, message: str):
         self.is_optimizing = False
