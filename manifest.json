@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "format": "csv",
+  "prediction_date": "2026-05-29",
+  "created_at": "2026-06-03T19:28:17+00:00",
+  "file": "predictions_20260529_200523.csv",
+  "sha256": "e1cadf6fbd912fa34da1062bcee224e1dddbe35b6c0d264a0f209a5a789afa40",
+  "size_bytes": 169513,
+  "source_name": "predictions_20260529_200523.csv"
+}
