@@ -1,41 +1,41 @@
 {
   "schema_version": 1,
   "format": "csv",
-  "prediction_date": "2026-06-19",
-  "created_at": "2026-06-20T08:05:37+00:00",
-  "file": "predictions_20260619_ema_public.csv.gz.b64",
-  "sha256": "d1fac813983955b498cbc43cf125c2dc13773834743126129ca087eef882e4f6",
-  "size_bytes": 201401,
-  "source_name": "predictions_20260619_ema_public.csv",
+  "prediction_date": "2026-06-26",
+  "created_at": "2026-06-27T08:45:46+00:00",
+  "file": "predictions_20260626_ema_public.csv.gz.b64",
+  "sha256": "a7354fecbe773706040ca64ce3e35682ec94df0ac3bd6134578d75b09e6b589e",
+  "size_bytes": 203100,
+  "source_name": "predictions_20260626_ema_public.csv",
   "encoding": "base64",
   "compression": "gzip",
   "parts": [
     {
-      "file": "predictions_20260619_ema_public.csv.gz.b64.part01",
-      "sha256": "134bdb315c6da50cd89f0ff89af02ec335c029df19140c5e551c27caf8ab3ce2",
+      "file": "predictions_20260626_ema_public.csv.gz.b64.part01",
+      "sha256": "b9e4789580679f4c3067ecbec0ae0fe39554743933ee58686a401170833575ba",
       "size_bytes": 30000
     },
     {
-      "file": "predictions_20260619_ema_public.csv.gz.b64.part02",
-      "sha256": "0e051ace435734777914f7b061ac0d16166fa0baaafa0de2711ac706da735fed",
+      "file": "predictions_20260626_ema_public.csv.gz.b64.part02",
+      "sha256": "5892d93d7702a69f3283ee9fe54f4b6d7af46a7e45bedab27885b47d0f74b4a0",
       "size_bytes": 30000
     },
     {
-      "file": "predictions_20260619_ema_public.csv.gz.b64.part03",
-      "sha256": "40ad5eaf6ab7ad3ab89c1d09ed59372e8f3b43290f6c53fbeafb234483ef295b",
+      "file": "predictions_20260626_ema_public.csv.gz.b64.part03",
+      "sha256": "c755891196c57749d3b65c194949ee9696e4f9ce7cc33d9c1a98e1f3a95c8a92",
       "size_bytes": 30000
     },
     {
-      "file": "predictions_20260619_ema_public.csv.gz.b64.part04",
-      "sha256": "a23a628516a6321d8ea188e85ec811ce9d10c42bcd7c378972aff5d5f2a45191",
+      "file": "predictions_20260626_ema_public.csv.gz.b64.part04",
+      "sha256": "683a604c74ee9b19a641a7db069e0c03194b888e5f0359e09748c820791a14a8",
       "size_bytes": 30000
     },
     {
-      "file": "predictions_20260619_ema_public.csv.gz.b64.part05",
-      "sha256": "918968dfe0d90c988c4ca8436320914a7d46debbd3a5ecc5cdc3ab135bb5e0d0",
-      "size_bytes": 6088
+      "file": "predictions_20260626_ema_public.csv.gz.b64.part05",
+      "sha256": "8e0579efbabf6bbd69ebf544498f06d4e953e9dadba502cdf4e84311b9da831e",
+      "size_bytes": 7692
     }
   ],
-  "compressed_size_bytes": 94566,
-  "encoded_size_bytes": 126088
+  "compressed_size_bytes": 95769,
+  "encoded_size_bytes": 127692
 }
